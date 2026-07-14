@@ -1,0 +1,61 @@
+name: TuCloud Deploy
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tucloud-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build --if-present
+      - name: Package immutable release
+        run: tar --exclude=.git --exclude=node_modules --exclude=.next/cache -czf /tmp/tucloud-release.tgz .
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.TUCLOUD_SSH_KEY }}
+          SSH_HOST: ${{ secrets.TUCLOUD_SSH_HOST }}
+          SSH_PORT: ${{ secrets.TUCLOUD_SSH_PORT }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/tucloud
+          chmod 600 ~/.ssh/tucloud
+          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts
+      - name: Upload and activate
+        env:
+          SSH_HOST: ${{ secrets.TUCLOUD_SSH_HOST }}
+          SSH_PORT: ${{ secrets.TUCLOUD_SSH_PORT }}
+          SSH_USER: ${{ secrets.TUCLOUD_SSH_USER }}
+          REMOTE_PATH: ${{ secrets.TUCLOUD_REMOTE_PATH }}
+        run: |
+          scp -P "$SSH_PORT" -i ~/.ssh/tucloud /tmp/tucloud-release.tgz "$SSH_USER@$SSH_HOST:/tmp/tucloud-$GITHUB_SHA.tgz"
+          ssh -p "$SSH_PORT" -i ~/.ssh/tucloud "$SSH_USER@$SSH_HOST" "REMOTE_PATH='$REMOTE_PATH' GITHUB_SHA='$GITHUB_SHA' bash -s" <<'REMOTE'
+          set -eu
+          RELEASE="$REMOTE_PATH/releases/$GITHUB_SHA"
+          ARCHIVE="/tmp/tucloud-$GITHUB_SHA.tgz"
+          mkdir -p "$RELEASE"
+          tar -xzf "$ARCHIVE" -C "$RELEASE"
+          cd "$RELEASE"
+          npm ci --omit=dev
+          ln -sfn "$RELEASE" "$REMOTE_PATH/current"
+          mkdir -p "$RELEASE/tmp"
+          touch "$RELEASE/tmp/restart.txt"
+          rm -f "$ARCHIVE"
+          REMOTE
