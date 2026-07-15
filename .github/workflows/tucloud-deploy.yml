@@ -18,6 +18,18 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Notify TuCloud - building
+        continue-on-error: true
+        env:
+          CALLBACK_URL: ${{ secrets.TUCLOUD_CALLBACK_URL }}
+          CALLBACK_TOKEN: ${{ secrets.TUCLOUD_CALLBACK_TOKEN }}
+          PROJECT_ID: ${{ secrets.TUCLOUD_PROJECT_ID }}
+          DEPLOYMENT_STATUS: building
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message || 'Deployment manual' }}
+        run: |
+          node -e 'const body={projectId:process.env.PROJECT_ID,status:process.env.DEPLOYMENT_STATUS,runId:process.env.RUN_ID,repository:process.env.REPOSITORY,branch:process.env.GITHUB_REF_NAME,commitSha:process.env.GITHUB_SHA,commitMessage:process.env.COMMIT_MESSAGE};fetch(process.env.CALLBACK_URL,{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+process.env.CALLBACK_TOKEN},body:JSON.stringify(body)}).then(async response=>{if(!response.ok)throw new Error("Callback HTTP "+response.status)})'
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -28,34 +40,28 @@ jobs:
         run: npm run build --if-present
       - name: Package immutable release
         run: tar --exclude=.git --exclude=node_modules --exclude=.next/cache -czf /tmp/tucloud-release.tgz .
-      - name: Configure SSH
-        env:
-          SSH_KEY: ${{ secrets.TUCLOUD_SSH_KEY }}
-          SSH_HOST: ${{ secrets.TUCLOUD_SSH_HOST }}
-          SSH_PORT: ${{ secrets.TUCLOUD_SSH_PORT }}
-        run: |
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/tucloud
-          chmod 600 ~/.ssh/tucloud
-          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts
       - name: Upload and activate
         env:
-          SSH_HOST: ${{ secrets.TUCLOUD_SSH_HOST }}
-          SSH_PORT: ${{ secrets.TUCLOUD_SSH_PORT }}
-          SSH_USER: ${{ secrets.TUCLOUD_SSH_USER }}
-          REMOTE_PATH: ${{ secrets.TUCLOUD_REMOTE_PATH }}
+          UPLOAD_URL: ${{ secrets.TUCLOUD_UPLOAD_URL }}
+          CALLBACK_TOKEN: ${{ secrets.TUCLOUD_CALLBACK_TOKEN }}
+          PROJECT_ID: ${{ secrets.TUCLOUD_PROJECT_ID }}
         run: |
-          scp -P "$SSH_PORT" -i ~/.ssh/tucloud /tmp/tucloud-release.tgz "$SSH_USER@$SSH_HOST:/tmp/tucloud-$GITHUB_SHA.tgz"
-          ssh -p "$SSH_PORT" -i ~/.ssh/tucloud "$SSH_USER@$SSH_HOST" "REMOTE_PATH='$REMOTE_PATH' GITHUB_SHA='$GITHUB_SHA' bash -s" <<'REMOTE'
-          set -eu
-          RELEASE="$REMOTE_PATH/releases/$GITHUB_SHA"
-          ARCHIVE="/tmp/tucloud-$GITHUB_SHA.tgz"
-          mkdir -p "$RELEASE"
-          tar -xzf "$ARCHIVE" -C "$RELEASE"
-          cd "$RELEASE"
-          npm ci --omit=dev
-          ln -sfn "$RELEASE" "$REMOTE_PATH/current"
-          mkdir -p "$RELEASE/tmp"
-          touch "$RELEASE/tmp/restart.txt"
-          rm -f "$ARCHIVE"
-          REMOTE
+          curl --fail --show-error --silent --request POST \
+            --header "Authorization: Bearer $CALLBACK_TOKEN" \
+            --header "Content-Type: application/gzip" \
+            --header "X-Tucloud-Commit-Sha: $GITHUB_SHA" \
+            --data-binary @/tmp/tucloud-release.tgz \
+            "$UPLOAD_URL?projectId=$PROJECT_ID"
+      - name: Notify TuCloud - completed
+        if: always()
+        continue-on-error: true
+        env:
+          CALLBACK_URL: ${{ secrets.TUCLOUD_CALLBACK_URL }}
+          CALLBACK_TOKEN: ${{ secrets.TUCLOUD_CALLBACK_TOKEN }}
+          PROJECT_ID: ${{ secrets.TUCLOUD_PROJECT_ID }}
+          DEPLOYMENT_STATUS: ${{ job.status }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message || 'Deployment manual' }}
+        run: |
+          node -e 'const body={projectId:process.env.PROJECT_ID,status:process.env.DEPLOYMENT_STATUS,runId:process.env.RUN_ID,repository:process.env.REPOSITORY,branch:process.env.GITHUB_REF_NAME,commitSha:process.env.GITHUB_SHA,commitMessage:process.env.COMMIT_MESSAGE};fetch(process.env.CALLBACK_URL,{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+process.env.CALLBACK_TOKEN},body:JSON.stringify(body)}).then(async response=>{if(!response.ok)throw new Error("Callback HTTP "+response.status)})'
