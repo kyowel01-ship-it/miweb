@@ -33,13 +33,67 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
       - name: Install dependencies
-        run: npm ci
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f package.json ]]; then
+            echo "Static project without package.json; dependency installation is not required."
+          elif [[ -f pnpm-lock.yaml ]]; then
+            corepack enable
+            pnpm install --frozen-lockfile
+          elif [[ -f yarn.lock ]]; then
+            corepack enable
+            yarn install --immutable || yarn install --frozen-lockfile
+          elif [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
       - name: Build
-        run: npm run build --if-present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f package.json ]]; then
+            echo "Static project; build step is not required."
+            exit 0
+          fi
+          if ! node -e 'const p=require("./package.json"); process.exit(p.scripts?.build ? 0 : 1)'; then
+            echo "No build script found; TuCloud will validate the static output next."
+            exit 0
+          fi
+          if [[ -f pnpm-lock.yaml ]]; then
+            pnpm run build
+          elif [[ -f yarn.lock ]]; then
+            yarn build
+          else
+            npm run build
+          fi
+      - name: Prepare safe web output
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/tucloud-output
+          mkdir -p /tmp/tucloud-output
+          output=""
+          for candidate in out dist build; do
+            if [[ -f "$candidate/index.html" ]]; then
+              output="$candidate"
+              break
+            fi
+          done
+          if [[ -n "$output" ]]; then
+            cp -a "$output/." /tmp/tucloud-output/
+          elif [[ ! -f package.json && -f index.html ]]; then
+            tar --exclude-vcs --exclude='.github' --exclude='.env*' --exclude='node_modules'               --exclude='*.md' --exclude='package*.json' --exclude='pnpm-lock.yaml' --exclude='yarn.lock'               -cf - . | tar -xf - -C /tmp/tucloud-output
+          else
+            echo "No deployable static output found. Expected out/, dist/ or build/ with index.html." >&2
+            echo "Next.js projects must use output: 'export'. Node.js/SSR runtimes are not enabled yet." >&2
+            exit 1
+          fi
+          test -f /tmp/tucloud-output/index.html
       - name: Package immutable release
-        run: tar --exclude=.git --exclude=node_modules --exclude=.next/cache -czf /tmp/tucloud-release.tgz .
+        run: tar -C /tmp/tucloud-output -czf /tmp/tucloud-release.tgz .
       - name: Upload and activate
         env:
           UPLOAD_URL: ${{ secrets.TUCLOUD_UPLOAD_URL }}
