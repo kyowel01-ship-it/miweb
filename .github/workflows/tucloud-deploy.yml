@@ -46,7 +46,7 @@ jobs:
           CALLBACK_TOKEN: ${{ secrets.TUCLOUD_CALLBACK_TOKEN }}
           PROJECT_ID: ${{ secrets.TUCLOUD_PROJECT_ID }}
         run: |
-          curl --fail --show-error --silent --request POST \
+          curl --fail-with-body --show-error --silent --request POST \
             --header "Authorization: Bearer $CALLBACK_TOKEN" \
             --header "Content-Type: application/gzip" \
             --header "X-Tucloud-Commit-Sha: $GITHUB_SHA" \
